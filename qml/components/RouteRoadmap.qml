@@ -200,7 +200,7 @@ Item {
                         color: root.moving ? Theme.warning : Theme.secondary
                         visible: root.active || root.moving
                         SequentialAnimation on x {
-                            running: root.moving
+                            running: root.moving && !Theme.lowFx
                             loops: Animation.Infinite
                             NumberAnimation {
                                 from: I18n.rtl ? 15 : 0

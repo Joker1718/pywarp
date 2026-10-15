@@ -66,7 +66,7 @@ Item {
                 border.color: Qt.rgba(1, 1, 1, 0.25)
                 visible: root.connecting || root.disconnecting
                 SequentialAnimation on opacity {
-                    running: visible
+                    running: visible && !Theme.lowFx
                     loops: Animation.Infinite
                     NumberAnimation { to: 0.15; duration: 500 }
                     NumberAnimation { to: 1; duration: 500 }

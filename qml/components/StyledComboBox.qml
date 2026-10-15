@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Shapes
 import "../theme"
 
 ComboBox {
@@ -26,26 +27,15 @@ ComboBox {
         height: 16
         x: I18n.rtl ? 12 : root.width - width - 12
         anchors.verticalCenter: parent.verticalCenter
-        Canvas {
+        Shape {
             anchors.fill: parent
-            onPaint: {
-                const ctx = getContext("2d")
-                ctx.reset()
-                ctx.strokeStyle = Theme.textMuted
-                ctx.lineWidth = 1.6
-                ctx.lineCap = "round"
-                ctx.lineJoin = "round"
-                ctx.beginPath()
-                ctx.moveTo(4, 6)
-                ctx.lineTo(8, 10)
-                ctx.lineTo(12, 6)
-                ctx.stroke()
-            }
-            Connections {
-                target: Theme
-                function onTextMutedChanged() {
-                    parent.requestPaint()
-                }
+            ShapePath {
+                strokeColor: Theme.textMuted
+                strokeWidth: 1.6
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+                fillColor: "transparent"
+                PathSvg { path: "M4 6 L8 10 L12 6" }
             }
         }
     }

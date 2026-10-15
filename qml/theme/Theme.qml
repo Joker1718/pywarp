@@ -1,9 +1,32 @@
 pragma Singleton
 
 import QtQuick
+import QtCore
 
 QtObject {
+    id: themeRoot
+
     readonly property SystemPalette systemPalette: SystemPalette {}
+
+    // ---- Low-resource mode (256 MB VRAM / low-RAM systems) ----
+    // Disables decorative infinite animations and collapses transition
+    // durations so the render thread can idle between input events.
+    // Enable from Settings > Performance, or force with --lowfx /
+    // --fullfx on the command line (flags override the saved setting).
+    readonly property var _cliArgs: Qt.application.arguments
+    readonly property bool _lowFxForced: _cliArgs.indexOf("--lowfx") >= 0
+    readonly property bool _fullFxForced: _cliArgs.indexOf("--fullfx") >= 0
+    property bool lowFxUser: false
+    readonly property bool lowFx: _fullFxForced
+        ? false : (_lowFxForced || lowFxUser)
+
+    // QtObject has no default property, so the Settings helper is held in
+    // a declared object property; the alias persists the user preference.
+    property QtObject _perfStore: Settings {
+        category: "performance"
+        property alias lowFxUser: themeRoot.lowFxUser
+    }
+
     readonly property bool aurora: AppController.theme === "aurora"
     readonly property bool dark: AppController.theme === "dark" || aurora
         || (AppController.theme === "system"
@@ -56,6 +79,6 @@ QtObject {
     readonly property int radiusPill: 999
     readonly property int space: 12
     readonly property int pageMargin: 26
-    readonly property int animationFast: 140
-    readonly property int animation: 240
+    readonly property int animationFast: lowFx ? 0 : 140
+    readonly property int animation: lowFx ? 0 : 240
 }

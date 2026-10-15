@@ -90,11 +90,6 @@ ApplicationWindow {
     Component { id: activityPage; ActivityPage {} }
     Component { id: settingsPage; SettingsPage {} }
 
-    Rectangle {
-        anchors.fill: parent
-        color: Theme.background
-    }
-
     ColumnLayout {
         id: appShell
         anchors.fill: parent
@@ -356,7 +351,7 @@ ApplicationWindow {
                             property: "opacity"
                             from: 0
                             to: 1
-                            duration: 240
+                            duration: Theme.animation
                             easing.type: Easing.OutCubic
                         }
                         NumberAnimation {
@@ -364,7 +359,7 @@ ApplicationWindow {
                             property: "y"
                             from: 9
                             to: 0
-                            duration: 300
+                            duration: Theme.animation
                             easing.type: Easing.OutCubic
                         }
                     }
@@ -391,7 +386,7 @@ ApplicationWindow {
             GradientStop { position: 1; color: Theme.secondary }
         }
         SequentialAnimation on x {
-            running: busyBar.visible
+            running: busyBar.visible && !Theme.lowFx
             loops: Animation.Infinite
             NumberAnimation {
                 from: I18n.rtl ? window.width : -busyBar.width
@@ -426,19 +421,23 @@ ApplicationWindow {
                     property: "opacity"
                     from: 0
                     to: 1
-                    duration: 180
+                    duration: Theme.animationFast
                 }
                 NumberAnimation {
                     property: "scale"
                     from: 0.92
                     to: 1
-                    duration: 260
+                    duration: Theme.animation
                     easing.type: Easing.OutBack
                 }
             }
         }
         exit: Transition {
-            NumberAnimation { property: "opacity"; to: 0; duration: 140 }
+            NumberAnimation {
+                property: "opacity"
+                to: 0
+                duration: Theme.animationFast
+            }
         }
         background: Rectangle {
             color: Theme.surfaceBright
@@ -710,7 +709,7 @@ ApplicationWindow {
                 property: "opacity"
                 from: 1
                 to: 0
-                duration: 130
+                duration: Theme.animationFast
                 easing.type: Easing.InCubic
             }
             NumberAnimation {
@@ -718,7 +717,7 @@ ApplicationWindow {
                 property: "scale"
                 from: 1
                 to: 0.985
-                duration: 130
+                duration: Theme.animationFast
                 easing.type: Easing.InCubic
             }
         }

@@ -35,7 +35,8 @@ Item {
             0.15
         )
         SequentialAnimation on scale {
-            running: root.connected || root.connecting || root.disconnecting
+            running: (root.connected || root.connecting
+                || root.disconnecting) && !Theme.lowFx
             loops: Animation.Infinite
             NumberAnimation { to: 1.04; duration: 1400; easing.type: Easing.InOutSine }
             NumberAnimation { to: 1; duration: 1400; easing.type: Easing.InOutSine }
@@ -64,7 +65,7 @@ Item {
         }
         onVisibleChanged: requestPaint()
         NumberAnimation on rotation {
-            running: root.connecting || root.disconnecting
+            running: (root.connecting || root.disconnecting) && !Theme.lowFx
             from: 0
             to: 360
             duration: 1350

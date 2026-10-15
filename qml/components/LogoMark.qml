@@ -33,6 +33,9 @@ Item {
         fillMode: Image.PreserveAspectFit
         smooth: true
         mipmap: true
+        // Never decode larger than 2x the displayed size: bounds the
+        // texture and image memory regardless of the source resolution.
+        sourceSize: Qt.size(width * 2, height * 2)
         onStatusChanged: {
             if (status === Image.Error && !root.fallbackTried) {
                 root.fallbackTried = true

@@ -115,7 +115,7 @@ Item {
         border.color: Theme.accent
 
         SequentialAnimation on opacity {
-            running: focusRing.visible && root.visible
+            running: focusRing.visible && root.visible && !Theme.lowFx
             loops: Animation.Infinite
             NumberAnimation {
                 from: 0.95

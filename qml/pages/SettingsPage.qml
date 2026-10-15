@@ -88,6 +88,53 @@ Item {
                         onActivated: AppController.setLanguage(values[currentIndex])
                     }
                 }
+
+                Panel {
+                    Layout.fillWidth: true
+                    padding: 16
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        Text {
+                            text: I18n.t("performance", "Performance")
+                            color: Theme.text
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Text {
+                                    text: I18n.t(
+                                        "low_resource_mode",
+                                        "Low resource mode"
+                                    )
+                                    color: Theme.text
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: I18n.t(
+                                        "low_resource_desc",
+                                        "Turns off decorative animations to reduce GPU and memory use on constrained systems."
+                                    )
+                                    color: Theme.textMuted
+                                    font.pixelSize: 10
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+                            ModernSwitch {
+                                checked: Theme.lowFx
+                                onToggled: function(checked) {
+                                    Theme.lowFxUser = checked
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             Panel {
@@ -167,6 +214,7 @@ Item {
                                 color: Theme.secondary
                                 SequentialAnimation on opacity {
                                     running: AppController.managedAccount
+                                        && !Theme.lowFx
                                     loops: Animation.Infinite
                                     NumberAnimation {
                                         to: 0.3

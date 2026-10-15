@@ -33,14 +33,14 @@ Item {
             target: valueText
             property: "scale"
             to: 1.07
-            duration: 110
+            duration: Theme.animationFast
             easing.type: Easing.OutCubic
         }
         NumberAnimation {
             target: valueText
             property: "scale"
             to: 1
-            duration: 190
+            duration: Theme.animation
             easing.type: Easing.OutBack
         }
     }

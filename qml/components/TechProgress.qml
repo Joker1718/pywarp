@@ -43,7 +43,7 @@ Item {
                 color: Qt.rgba(1, 1, 1, 0.22)
                 visible: root.running
                 SequentialAnimation on x {
-                    running: root.running
+                    running: root.running && !Theme.lowFx
                     loops: Animation.Infinite
                     NumberAnimation {
                         from: I18n.rtl ? Math.max(0, fill.width) : -36

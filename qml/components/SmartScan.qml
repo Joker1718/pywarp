@@ -43,7 +43,7 @@ Item {
         anchors.fill: parent
         rotation: root.running ? 360 : root.progress * 3.6
         NumberAnimation on rotation {
-            running: root.running
+            running: root.running && !Theme.lowFx
             from: 0
             to: 360
             duration: 1700
@@ -83,7 +83,7 @@ Item {
             radius: 3
             color: Theme.secondary
             SequentialAnimation on opacity {
-                running: root.running
+                running: root.running && !Theme.lowFx
                 loops: Animation.Infinite
                 NumberAnimation { to: 0.15; duration: 500 }
                 NumberAnimation { to: 1; duration: 500 }

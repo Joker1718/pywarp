@@ -24,7 +24,7 @@ Rectangle {
             radius: 4
             color: Theme.accent
             SequentialAnimation on opacity {
-                running: true
+                running: !Theme.lowFx
                 loops: Animation.Infinite
                 NumberAnimation { to: 0.35; duration: 700 }
                 NumberAnimation { to: 1; duration: 700 }
