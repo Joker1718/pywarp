@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import "../components"
 import "../theme"
@@ -675,6 +676,38 @@ Item {
                                 }
                             }
                         }
+                    }
+
+                    Panel {
+                        id: nativeWireguardPanel
+                        visible: AppController.nativeEngineAvailable
+                        Layout.fillWidth: true
+                        padding: 16
+
+                        Text {
+                            text: I18n.t("native_wireguard", "Native WireGuard")
+                            color: Theme.text
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: I18n.t("native_wireguard_hint", "WireGuard connects through the AmneziaWG engine with WARP-safe obfuscation. A WARP device is registered automatically on connect, or import an existing config.")
+                            color: Theme.textMuted
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
+                        AppButton {
+                            text: I18n.t("import_wg_config", "Import WireGuard config")
+                            quiet: true
+                            onClicked: wgConfigDialog.open()
+                        }
+                    }
+
+                    FileDialog {
+                        id: wgConfigDialog
+                        nameFilters: ["WireGuard configs (*.conf)"]
+                        onAccepted: AppController.importNativeConfig(selectedFile)
                     }
 
                     Panel {

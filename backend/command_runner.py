@@ -100,9 +100,15 @@ class _TaskWorker(QRunnable):
 class CommandRunner(QObject):
     """Runs warp-cli commands without blocking the QML render thread."""
 
-    def __init__(self, parent: QObject | None = None):
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        dedicated_pool: QThreadPool | None = None,
+    ):
         super().__init__(parent)
-        self._pool = QThreadPool.globalInstance()
+        # A dedicated single-worker pool serializes ordered operations
+        # (used for the native tunnel service lifecycle).
+        self._pool = dedicated_pool or QThreadPool.globalInstance()
         self._active: set[_CommandWorker] = set()
         self._idle_callbacks: list[Callable[[], None]] = []
 

@@ -16,7 +16,7 @@ QtObject {
     readonly property var _cliArgs: Qt.application.arguments
     readonly property bool _lowFxForced: _cliArgs.indexOf("--lowfx") >= 0
     readonly property bool _fullFxForced: _cliArgs.indexOf("--fullfx") >= 0
-    property bool lowFxUser: false
+    property bool lowFxUser: true
     readonly property bool lowFx: _fullFxForced
         ? false : (_lowFxForced || lowFxUser)
 

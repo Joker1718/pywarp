@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import ipaddress
 import json
 import logging
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 
 import requests
@@ -17,6 +19,7 @@ from PySide6.QtCore import (
     Property,
     QProcess,
     QSettings,
+    QThreadPool,
     QTimer,
     QObject,
     Signal,
@@ -25,7 +28,11 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices
 
+from . import tunnel_engine as te
+from . import warp_registration as wreg
+from . import wireguard_config as wgc
 from .command_runner import CommandResult, CommandRunner, find_warp_cli
+from .guards import check_protocol_mode_guard
 from .models import ObjectListModel
 
 
@@ -102,6 +109,21 @@ class AppController(QObject):
         self._language = str(self._settings.value("language", "en"))
         if self._language not in ("en", "fa", "ru", "zh_CN"):
             self._language = "en"
+        # Native WireGuard (WARP-over-AmneziaWG) path state.
+        self._native_device = self._load_json_setting("native_device", None)
+        self._native_engine = te.find_tunnel_engine()
+        self._native_conf_path = log_path.parent / "pywarp-warp.conf"
+        self._native_tunnel_active = False
+        self._native_failures = 0
+        self._native_started_at = 0.0
+        self._native_ever_connected = False
+        self._native_timer = QTimer(self)
+        self._native_timer.setInterval(2000)
+        self._native_timer.timeout.connect(self._poll_native_status)
+        # Single-worker pool: native service ops run strictly in order.
+        self._native_pool = QThreadPool(self)
+        self._native_pool.setMaxThreadCount(1)
+        self._native_runner = CommandRunner(self, dedicated_pool=self._native_pool)
         try:
             country_names_path = (
                 Path(__file__).resolve().parent.parent
@@ -471,6 +493,10 @@ class AppController(QObject):
                 continue
 
             if "status" in event:
+                if self._native_tunnel_active:
+                    # The warp-cli daemon is disconnected while the native
+                    # tunnel runs; its events must not overwrite our status.
+                    continue
                 old_status = self._status
                 old_reason_code = self._reason_code
                 raw_status = str(event.get("status", "Unknown"))
@@ -887,6 +913,14 @@ class AppController(QObject):
     def language(self) -> str:
         return self._language
 
+    @Property(bool, notify=stateChanged)
+    def nativeEngineAvailable(self) -> bool:
+        return self._native_engine is not None
+
+    @Property(bool, notify=stateChanged)
+    def nativeRegistered(self) -> bool:
+        return bool(self._native_device)
+
     @Property(bool, notify=settingsChanged)
     def warpInstalled(self) -> bool:
         return self._warp_installed
@@ -1211,6 +1245,35 @@ class AppController(QObject):
                         ),
                     )
 
+        if command == "connect" and self._protocol == "WireGuard":
+            guard = check_protocol_mode_guard(
+                self._mode, "WireGuard", self._masque_option
+            )
+            if guard:
+                # Restored settings can pair proxy with WireGuard; refuse
+                # here too, not only when the user changes the settings.
+                self._status = previous_status
+                self._reason_title = previous_title
+                self._reason = previous_reason
+                self._connect_intent_deadline = 0.0
+                self.stateChanged.emit()
+                self.toastRequested.emit("error", guard)
+                return
+            if self._native_engine:
+                self._connect_native(generation)
+                return
+            self.toastRequested.emit(
+                "info",
+                "No WireGuard engine found; using the Cloudflare client "
+                "path. Install AmneziaWG for the native WireGuard tunnel.",
+            )
+        elif command == "disconnect" and self._protocol == "WireGuard":
+            # Route through the native path even while a connect is still
+            # installing: remove_tunnel is idempotent and the stale-generation
+            # install callback would otherwise leave the service running.
+            self._disconnect_native()
+            return
+
         self._run(
             [command],
             success=success,
@@ -1218,6 +1281,202 @@ class AppController(QObject):
             busy=False,
             report_errors=False,
         )
+
+    def _ensure_native_device(self, generation: int) -> None:
+        if self._native_device:
+            self._start_native_tunnel(generation, self._native_device)
+            return
+        self._append_event(
+            "connection",
+            "Registering a WARP device",
+            "The native WireGuard path needs a WARP device.",
+            "INFO",
+        )
+
+        def task() -> dict:
+            private = wreg.generate_private_key()
+            tos = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+            device = wreg.register_device(requests.Session(), private, tos)
+            device["private_key"] = base64.b64encode(private).decode()
+            return device
+
+        def registered(device: dict) -> None:
+            if generation != self._connection_generation:
+                return
+            self._native_device = device
+            self._save_setting("native_device", json.dumps(device))
+            self._start_native_tunnel(generation, device)
+
+        def failed(message: str) -> None:
+            if generation != self._connection_generation:
+                return
+            self._status = "Failed"
+            self._reason_title = "WARP registration failed"
+            self._reason = message.splitlines()[0]
+            self.stateChanged.emit()
+            self._append_event("error", self._reason_title, self._reason, "ERROR")
+            self.toastRequested.emit("error", self._reason)
+
+        self._runner.run_task(task, on_success=registered, on_error=failed)
+
+    def _connect_native(self, generation: int) -> None:
+        self._ensure_native_device(generation)
+
+    def _start_native_tunnel(self, generation: int, device: dict) -> None:
+        engine = self._native_engine
+        if not engine:
+            return
+
+        def task() -> str:
+            junk = device.get("junk") or wgc.DEFAULT_JUNK
+            conf = wgc.build_tunnel_config(
+                private_key_b64=device["private_key"],
+                address_v4=device.get("address_v4") or wreg.DEFAULT_ADDRESS_V4,
+                address_v6=device.get("address_v6") or "",
+                endpoint=device.get("endpoint") or wgc.DEFAULT_ENDPOINT,
+                junk=junk,
+                mtu=int(device.get("mtu") or wgc.DEFAULT_MTU),
+                # The stock WireGuard parser rejects AWG-only keys.
+                profile="amneziawg" if engine.name == "AmneziaWG" else "wireguard",
+            )
+            target = Path(self._native_conf_path)
+            temp = target.with_suffix(".tmp")
+            temp.write_text(conf, encoding="utf-8")
+            temp.replace(target)
+            te.remove_tunnel(engine)
+            te.install_tunnel(engine, str(target))
+            return str(target)
+
+        def done(_result: str) -> None:
+            if generation != self._connection_generation:
+                return
+            self._native_tunnel_active = True
+            self._native_failures = 0
+            self._native_ever_connected = False
+            self._native_started_at = time.monotonic()
+            self._native_timer.start()
+
+        def failed(message: str) -> None:
+            if generation != self._connection_generation:
+                return
+            self._status = "Failed"
+            self._reason_title = "WireGuard tunnel failed"
+            self._reason = message.splitlines()[0]
+            self.stateChanged.emit()
+            self._append_event("error", self._reason_title, self._reason, "ERROR")
+            self.toastRequested.emit("error", self._reason)
+
+        self._native_runner.run_task(task, on_success=done, on_error=failed)
+
+    def _disconnect_native(self) -> None:
+        self._native_timer.stop()
+        self._native_tunnel_active = False
+        engine = self._native_engine
+        if engine:
+            self._native_runner.run_task(
+                lambda: te.remove_tunnel(engine), on_error=lambda _message: None
+            )
+        self._status = "Disconnected"
+        self._reason_code = ""
+        self._reason_title, self._reason = self._friendly_reason(
+            "", "", "Disconnected"
+        )
+        self.stateChanged.emit()
+
+    def _poll_native_status(self) -> None:
+        engine = self._native_engine
+        if not engine or not self._native_tunnel_active:
+            self._native_timer.stop()
+            return
+
+        def task() -> bool:
+            # Service query + probe together stay off the UI thread.
+            if not te.tunnel_service_running(engine):
+                return False
+            response = requests.get("https://1.1.1.1/cdn-cgi/trace", timeout=4)
+            response.raise_for_status()
+            return True
+
+        self._native_runner.run_task(
+            task,
+            on_success=lambda healthy: (
+                self._handle_native_probe_success()
+                if healthy
+                else self._handle_native_probe_failure(
+                    "The WireGuard tunnel service stopped."
+                )
+            ),
+            on_error=lambda _message: self._handle_native_probe_failure(
+                "The tunnel probe failed."
+            ),
+        )
+
+    def _handle_native_probe_success(self) -> None:
+        if not self._native_tunnel_active:
+            return
+        self._native_failures = 0
+        if self._status != "Connected":
+            was_connected = self._status == "Connected"
+            self._native_ever_connected = True
+            self._status = "Connected"
+            self._reason_code = ""
+            self._reason_title = "Secure connection established"
+            self._reason = (
+                f"Connected with WireGuard (native) in {self._mode} mode."
+            )
+            self.stateChanged.emit()
+            if not was_connected:
+                self._append_event(
+                    "connection",
+                    "Secure connection established",
+                    self._reason,
+                    "SUCCESS",
+                )
+                self.refreshPublicIp()
+
+    def _handle_native_probe_failure(self, reason: str) -> None:
+        if not self._native_tunnel_active:
+            return
+        self._native_failures += 1
+        if (
+            not self._native_ever_connected
+            and time.monotonic() - self._native_started_at > 45.0
+        ):
+            self._fail_native_tunnel(
+                "ConnectionTimeout",
+                "Connection attempt timed out",
+                "The native WireGuard tunnel could not reach Cloudflare.",
+            )
+        elif self._native_ever_connected and self._native_failures >= 6:
+            # ~12s of failures after a working connection: the tunnel is gone.
+            self._fail_native_tunnel(
+                "TunnelLost",
+                "The WireGuard tunnel was lost",
+                "The native WireGuard tunnel stopped passing traffic and was removed.",
+            )
+        elif self._native_ever_connected and self._native_failures >= 2:
+            if self._status == "Connected":
+                self._status = "Connecting"
+                self._reason_title = "Rechecking the tunnel"
+                self._reason = reason
+                self.stateChanged.emit()
+
+    def _fail_native_tunnel(self, code: str, title: str, reason: str) -> None:
+        self._native_timer.stop()
+        self._native_tunnel_active = False
+        self._connection_generation += 1
+        self._status = "Failed"
+        self._reason_code = code
+        self._reason_title = title
+        self._reason = reason
+        self.stateChanged.emit()
+        self._append_event("network", title, reason, "ERROR")
+        self.toastRequested.emit("error", reason)
+        engine = self._native_engine
+        if engine:
+            self._native_runner.run_task(
+                lambda: te.remove_tunnel(engine), on_error=lambda _message: None
+            )
 
     def _connection_attempt_timeout(self, generation: int) -> None:
         if (
@@ -1284,10 +1543,11 @@ class AppController(QObject):
                     "error", "Proxy port must be between 1 and 65535."
                 )
                 return
-            if self._protocol == "MASQUE" and self._masque_option == "h2-only":
-                self.toastRequested.emit(
-                    "error", "Proxy mode cannot use MASQUE HTTP/2 only."
-                )
+            guard = check_protocol_mode_guard(
+                "proxy", self._protocol, self._masque_option
+            )
+            if guard:
+                self.toastRequested.emit("error", guard)
                 return
 
             def proxy_saved() -> None:
@@ -1316,12 +1576,11 @@ class AppController(QObject):
         self._apply_mode(mode)
 
     def _apply_mode(self, mode: str) -> None:
-        if mode == "proxy" and self._protocol == "MASQUE" and (
-            self._masque_option == "h2-only"
-        ):
-            self.toastRequested.emit(
-                "error", "Proxy mode cannot use MASQUE HTTP/2 only."
-            )
+        guard = check_protocol_mode_guard(
+            mode, self._protocol, self._masque_option
+        )
+        if guard:
+            self.toastRequested.emit("error", guard)
             return
 
         def saved(_: CommandResult) -> None:
@@ -1363,6 +1622,12 @@ class AppController(QObject):
         if protocol not in PROTOCOL_VALUES:
             self.toastRequested.emit("error", "Unsupported tunnel protocol.")
             return
+        guard = check_protocol_mode_guard(
+            self._mode, protocol, self._masque_option
+        )
+        if guard:
+            self.toastRequested.emit("error", guard)
+            return
 
         def saved(_: CommandResult) -> None:
             self._protocol = protocol
@@ -1374,6 +1639,30 @@ class AppController(QObject):
             success=saved,
             success_message=f"Protocol changed to {protocol}.",
         )
+
+    @Slot(str)
+    def importNativeConfig(self, path: str) -> None:
+        if path.startswith("file:///"):
+            path = urllib.parse.unquote(path[len("file:///"):])
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            parsed = wreg.parse_wg_config(text)
+        except (OSError, wreg.ConfigError, ValueError) as exc:
+            self.toastRequested.emit("error", f"Import failed: {exc}")
+            return
+        device = {
+            "private_key": parsed["private_key"],
+            "address_v4": parsed["address_v4"],
+            "address_v6": parsed["address_v6"],
+            "endpoint": parsed["endpoint"],
+            "junk": parsed["junk"] or None,
+            "mtu": parsed["mtu"],
+            "imported": True,
+        }
+        self._native_device = device
+        self._save_setting("native_device", json.dumps(device))
+        self.stateChanged.emit()
+        self.toastRequested.emit("success", "WireGuard config imported.")
 
     @Slot(str)
     def setMasqueOption(self, option: str) -> None:
@@ -1656,6 +1945,11 @@ class AppController(QObject):
             f"{protocol} · {transport} · {mode.upper()}"
         )
         self.autoSelectionChanged.emit()
+        if self._native_tunnel_active:
+            # The daemon disconnect is a no-op while the native tunnel runs.
+            self._disconnect_native()
+            self._begin_auto_disconnect_wait()
+            return
         self._runner.run(
             ["disconnect"],
             on_success=lambda _: self._begin_auto_disconnect_wait(),
@@ -2075,6 +2369,9 @@ class AppController(QObject):
 
     @Slot()
     def refreshStats(self) -> None:
+        if self._native_tunnel_active:
+            # Daemon stats/protocol would misreport the native tunnel.
+            return
         if not self.connected or self._stats_pending:
             return
         self._stats_pending = True
@@ -2769,12 +3066,32 @@ class AppController(QObject):
         self._stats_timer.stop()
         self._status_watchdog.stop()
         self._ip_refresh_timer.stop()
+        self._native_timer.stop()
         if self._status_process.state() != QProcess.NotRunning:
             self._status_process.finished.disconnect(self._restart_status_stream)
             self._status_process.kill()
         if self._status in ("Connected", "Connecting"):
             self._status = "Disconnecting"
             self.stateChanged.emit()
+        if self._protocol == "WireGuard":
+            # The native tunnel must not outlive the app: remove the service,
+            # then stop the daemon tunnel too — with no engine installed the
+            # connection may be warp-cli-managed (fallback path).
+            engine = self._native_engine
+
+            def _shutdown_native() -> None:
+                if engine:
+                    try:
+                        te.remove_tunnel(engine)
+                    except te.EngineError:
+                        pass
+
+            self._native_runner.run_task(
+                _shutdown_native,
+                on_success=self._disconnect_for_shutdown,
+                on_error=self._disconnect_for_shutdown,
+            )
+            return
         self._runner.run_when_idle(self._disconnect_for_shutdown)
 
     def _disconnect_for_shutdown(self) -> None:
