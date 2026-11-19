@@ -491,6 +491,11 @@ class AppController(QObject):
                 if not complete and not flush:
                     self._status_buffer = line + self._status_buffer
                 continue
+            # warp-cli emits bare `null` lines around daemon transitions;
+            # membership tests on None crashed the reader (field log
+            # 2026-11-13). Skip every non-dict event.
+            if not isinstance(event, dict):
+                continue
 
             if "status" in event:
                 if self._native_tunnel_active:

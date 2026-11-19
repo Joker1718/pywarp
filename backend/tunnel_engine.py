@@ -13,9 +13,13 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from typing import NamedTuple
 
 CONF_NAME = "pywarp-warp"
+
+_SERVICE_STOP_TIMEOUT_S = 15.0
+_SERVICE_POLL_INTERVAL_S = 0.5
 
 _ENGINE_CANDIDATES = {
     "AmneziaWG": (
@@ -92,6 +96,29 @@ def install_tunnel(engine: Engine, conf_path: str) -> None:
             or result.stdout.strip()
             or f"{engine.name} tunnel service install failed"
         )
+    # The engine creates tunnel services AUTOMATIC; force demand-start so a
+    # crash or forced power-off cannot silently re-raise the tunnel at boot.
+    # Best-effort: a failed start-type change must not fail a working connect.
+    _run(["sc", "config", service_name(engine), "start=", "demand"])
+
+
+def _service_not_stopped(engine: Engine) -> bool:
+    """True while the tunnel service still exists and is not STOPPED."""
+    result = _run(["sc", "query", service_name(engine)])
+    if result.returncode != 0:
+        return False
+    combined = (result.stdout or "").upper()
+    return "RUNNING" in combined or "STOP_PENDING" in combined
+
+
+def _wait_service_terminal(engine: Engine) -> bool:
+    """Wait (bounded) until the service is absent from SCM or STOPPED."""
+    deadline = time.monotonic() + _SERVICE_STOP_TIMEOUT_S
+    while _service_not_stopped(engine):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_SERVICE_POLL_INTERVAL_S)
+    return True
 
 
 def remove_tunnel(engine: Engine) -> None:
@@ -100,19 +127,30 @@ def remove_tunnel(engine: Engine) -> None:
     The CLI takes the TUNNEL name here (it derives the service name itself)
     and forbids '$' in tunnel names, so the service name must NOT be passed.
     A missing tunnel is treated as success (idempotent removal).
+    A not-stopped service survives the CLI uninstall (the SCM keeps a
+    delete-marked service alive until it is stopped), so the removal is
+    verified to a terminal state and escalated through the SCM if needed.
     """
     result = _run([engine.exe_path, "/uninstalltunnelservice", CONF_NAME])
     if result.returncode != 0:
         combined = ((result.stderr or "") + (result.stdout or "")).lower()
-        if any(
+        if not any(
             marker in combined
             for marker in ("does not exist", "not found", "no such", "unable to find")
         ):
-            return
+            raise EngineError(
+                result.stderr.strip()
+                or result.stdout.strip()
+                or f"{engine.name} tunnel service removal failed"
+            )
+    if _wait_service_terminal(engine):
+        return
+    service = service_name(engine)
+    _run(["sc", "stop", service])
+    _run(["sc", "delete", service])
+    if not _wait_service_terminal(engine):
         raise EngineError(
-            result.stderr.strip()
-            or result.stdout.strip()
-            or f"{engine.name} tunnel service removal failed"
+            f"{engine.name} tunnel service did not stop: {service}"
         )
 
 
